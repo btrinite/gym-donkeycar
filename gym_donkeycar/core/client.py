@@ -28,6 +28,8 @@ class SDClient:
         self.port = port
         self.poll_socket_sleep_sec = poll_socket_sleep_time
         self.th = None
+        self.recv_packet = ""
+
 
         # the aborted flag will be set when we have detected a problem with the socket
         # that we can't recover from.
@@ -83,7 +85,6 @@ class SDClient:
         sock.setblocking(0)
         inputs = [ sock ]
         outputs = [ sock ]
-        partial = []
 
         while self.do_process_msgs:
             # without this sleep, I was getting very consistent socket errors
@@ -107,15 +108,17 @@ class SDClient:
                     # for json.loads, but we do need a string in order to do
                     # the split by \n newline char. This seperates each json msg.
                     data = data.decode("utf-8")
-                    msgs = data.split("\n")
-
-                    for m in msgs:
-                        if len(m) < 2:
+                    self.recv_packet = self.recv_packet + data
+                    msgs = self.recv_packet.replace('\n', '').split("{")
+                    self.recv_packet=""
+                    for idx, m in enumerate(msgs):
+                        if len(m) == 0:
                             continue
+                        m='{'+m
                         last_char = m[-1]
                         first_char = m[0]
                         # check first and last char for a valid json terminator
-                        # if not, then add to our partial packets list and see
+                        # if not, push back to input buffer
                         # if we get the rest of the packet on our next go around.                
                         if first_char == "{" and last_char == '}':
                             # Replace comma with dots for floats
@@ -128,28 +131,10 @@ class SDClient:
                                 logger.error("Exception:" + str(e))
                                 logger.error("json: " + m)
                         else:
-                            partial.append(m)
-                            # logger.info("partial packet:" + m)
-                            if last_char == '}':
-                                if partial[0][0] == "{":
-                                    assembled_packet = "".join(partial)
-                                    assembled_packet = replace_float_notation(assembled_packet)
-                                    second_open = assembled_packet.find('{"msg', 1)
-                                    if second_open != -1:
-                                        # hmm what to do? We have a partial packet. Trimming just
-                                        # the good part and discarding the rest.
-                                        logger.warn("got partial packet:" + assembled_packet[:20])
-                                        assembled_packet = assembled_packet[second_open:]
-
-                                    try:
-                                        j = json.loads(assembled_packet)
-                                        self.on_msg_recv(j)
-                                    except Exception as e:
-                                        logger.error("Exception:" + str(e))
-                                        logger.error("partial json: " + assembled_packet)
-                                else:
-                                    logger.error("failed packet.")
-                                partial.clear()
+                            if (idx==len(msgs)-1):
+                                self.recv_packet=m
+                            else:
+                                logger.error("Recv : Unexpected partial JSON object "+str(idx)+" in the middle of the TCP buffer ! "+first_char+last_char+ ", buffer = "+m)
                         
                 for s in writable:
                     if self.msg != None:
